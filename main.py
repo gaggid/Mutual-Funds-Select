@@ -167,15 +167,28 @@ def create_performance_timeline(df, top_10_indices):
 
     return fig
 
-def create_comparison_charts(df, top_10_indices, top_20_indices):
-    # Create a subset of data for top 20 funds
-    df_top20 = df.iloc[top_20_indices].copy()
-    # Add a category column
-    df_top20['Category'] = np.where(df_top20.index.isin(top_10_indices), 'Top 10', 'Next 10')
+def create_comparison_charts(df, top_10_indices, top_20_indices, scores):
+    # Add user input for matrix comparison
+    st.sidebar.subheader("Matrix Comparison Settings")
+    n_funds = st.sidebar.number_input("Number of funds to compare in matrix:", 
+                                    min_value=5, 
+                                    max_value=len(df), 
+                                    value=10,
+                                    step=5)
     
-    # 1. Performance vs Risk Plot
+    # Get indices for matrix comparison
+    matrix_top_n = scores.nlargest(n_funds).index
+    matrix_next_n = scores.nlargest(2*n_funds).index[n_funds:]
+    
+    # Create matrix analysis dataframe
+    df_matrix = df.iloc[scores.nlargest(2*n_funds).index].copy()
+    df_matrix['Category'] = np.where(df_matrix.index.isin(matrix_top_n), 
+                                   f'Top {n_funds}', 
+                                   f'Next {n_funds}')
+    
+    # Create original plots
     fig_perf_risk = px.scatter(
-        df_top20,
+        df_matrix,  # Changed from df_top20 to df_matrix
         x='Std Dev \n 5Yr',
         y='Sharpe Ratio 5Yr',
         color='Category',
@@ -188,9 +201,8 @@ def create_comparison_charts(df, top_10_indices, top_20_indices):
     )
     fig_perf_risk.update_traces(textposition='top center')
     
-    # 2. Alpha vs Beta Plot
     fig_alpha_beta = px.scatter(
-        df_top20,
+        df_matrix,  # Changed from df_top20 to df_matrix
         x='Beta \n 5Yr',
         y='Alpha \n 5Yr',
         color='Category',
@@ -203,9 +215,8 @@ def create_comparison_charts(df, top_10_indices, top_20_indices):
     )
     fig_alpha_beta.update_traces(textposition='top center')
     
-    # 3. Consistency Plot (3Yr vs 5Yr returns)
     fig_consistency = px.scatter(
-        df_top20,
+        df_matrix,  # Changed from df_top20 to df_matrix
         x='Sharpe Ratio 3Yr',
         y='Sharpe Ratio 5Yr',
         color='Category',
@@ -218,25 +229,40 @@ def create_comparison_charts(df, top_10_indices, top_20_indices):
     )
     fig_consistency.update_traces(textposition='top center')
     
-    # 4. Quadrant Analysis Plot
-    df_top20 = df.iloc[top_20_indices].copy()
-    df_top20['Category'] = np.where(df_top20.index.isin(top_10_indices), 'Top 10', 'Next 10')
-    
     # Calculate medians for quadrant lines
-    perf_median = df_top20['Sharpe Ratio 5Yr'].median()
-    risk_median = df_top20['Std Dev \n 5Yr'].median()
+    perf_median = df_matrix['Sharpe Ratio 5Yr'].median()
+    risk_median = df_matrix['Std Dev \n 5Yr'].median()
+    
+    # Add quadrant classification
+    df_matrix['Quadrant'] = 'Undefined'
+    df_matrix.loc[(df_matrix['Sharpe Ratio 5Yr'] >= perf_median) & 
+                 (df_matrix['Std Dev \n 5Yr'] < risk_median), 'Quadrant'] = 'Ideal'
+    df_matrix.loc[(df_matrix['Sharpe Ratio 5Yr'] >= perf_median) & 
+                 (df_matrix['Std Dev \n 5Yr'] >= risk_median), 'Quadrant'] = 'Aggressive'
+    df_matrix.loc[(df_matrix['Sharpe Ratio 5Yr'] < perf_median) & 
+                 (df_matrix['Std Dev \n 5Yr'] < risk_median), 'Quadrant'] = 'Conservative'
+    df_matrix.loc[(df_matrix['Sharpe Ratio 5Yr'] < perf_median) & 
+                 (df_matrix['Std Dev \n 5Yr'] >= risk_median), 'Quadrant'] = 'Suboptimal'
+    
+    # Quadrant descriptions
+    quadrant_descriptions = {
+        'Ideal': 'High Sharpe ratio with lower volatility - Optimal risk-adjusted performance',
+        'Aggressive': 'High Sharpe ratio with higher volatility - Strong returns but higher risk exposure',
+        'Conservative': 'Lower Sharpe ratio with lower volatility - Stable but potentially lower returns',
+        'Suboptimal': 'Lower Sharpe ratio with higher volatility - May need portfolio revaluation'
+    }
     
     fig_quadrant = go.Figure()
     
     # Add scatter plot
-    for category, color in zip(['Top 10', 'Next 10'], ['blue', 'red']):
-        mask = df_top20['Category'] == category
+    for category, color in zip([f'Top {n_funds}', f'Next {n_funds}'], ['blue', 'red']):
+        mask = df_matrix['Category'] == category
         fig_quadrant.add_trace(go.Scatter(
-            x=df_top20[mask]['Std Dev \n 5Yr'],
-            y=df_top20[mask]['Sharpe Ratio 5Yr'],
+            x=df_matrix[mask]['Std Dev \n 5Yr'],
+            y=df_matrix[mask]['Sharpe Ratio 5Yr'],
             mode='markers+text',
             name=category,
-            text=df_top20[mask]['Fund Name'],
+            text=df_matrix[mask]['Fund Name'],
             textposition="top center",
             marker=dict(size=10, color=color),
             showlegend=True
@@ -264,7 +290,7 @@ def create_comparison_charts(df, top_10_indices, top_20_indices):
                               showarrow=False, font=dict(size=12, color="red"))
     
     fig_quadrant.update_layout(
-        title="Fund Positioning Matrix (5-Year)",
+        title=f"Fund Positioning Matrix (Top {2*n_funds} Funds)",
         xaxis_title="Risk (Standard Deviation)",
         yaxis_title="Performance (Sharpe Ratio)",
         height=600,
@@ -277,7 +303,12 @@ def create_comparison_charts(df, top_10_indices, top_20_indices):
         )
     )
     
-    return fig_perf_risk, fig_alpha_beta, fig_consistency, fig_quadrant
+    # Prepare export dataframe
+    export_df = df_matrix[['Fund Name', 'Category', 'Quadrant', 
+                          'Sharpe Ratio 5Yr', 'Std Dev \n 5Yr']].copy()
+    export_df['Quadrant Description'] = export_df['Quadrant'].map(quadrant_descriptions)
+    
+    return fig_perf_risk, fig_alpha_beta, fig_consistency, fig_quadrant, export_df, quadrant_descriptions
 def main():
     st.title("Mutual Fund Analysis Dashboard")
     
@@ -319,11 +350,24 @@ def main():
         
         # Performance comparison charts
         st.header("Performance Analysis")
-        fig_perf_risk, fig_alpha_beta, fig_consistency, fig_quadrant = create_comparison_charts(df, top_10_indices, top_20_indices)
+        fig_perf_risk, fig_alpha_beta, fig_consistency, fig_quadrant, export_df, quadrant_descriptions = \
+            create_comparison_charts(df, top_10_indices, top_20_indices, scores)
         
         # Display quadrant analysis first
         st.subheader("Fund Positioning Analysis")
         st.plotly_chart(fig_quadrant, use_container_width=True)
+        # After displaying the quadrant chart, add:
+        st.subheader("Quadrant Categories Explanation")
+        for quadrant, desc in quadrant_descriptions.items():
+            st.write(f"**{quadrant}**: {desc}")
+        
+        # Add matrix analysis export (add this before or after your existing download button)
+        st.download_button(
+            label="Download matrix analysis results as CSV",
+            data=export_df.to_csv(index=False),
+            file_name="fund_matrix_analysis.csv",
+            mime="text/csv"
+        )
 
         # Create two columns for other charts
         col1, col2 = st.columns(2)
